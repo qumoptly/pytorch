@@ -52,6 +52,7 @@ class CAFFE2_API OnnxExporter {
       const std::unordered_map<std::string, caffe2::TensorShape>& shapes);
 
   void InitOpToTensorProto(const caffe2::OperatorDef& def, TensorProto* tensor);
+
  private:
   ConvertedResult CommonCaffe2OpToOnnxNodes(const caffe2::OperatorDef& def);
 
@@ -111,7 +112,7 @@ class CAFFE2_API OnnxExporter {
       const caffe2::OperatorDef& def,
       const std::unordered_map<std::string, caffe2::TensorShape>& shapes);
 
-  // \brief Check black listed arguemnts where we won't pass down when
+  // \brief Check black listed arguments where we won't pass down when
   // converting to ONNX node
   bool IsBlackListed(const caffe2::Argument& arg);
 

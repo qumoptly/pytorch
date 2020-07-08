@@ -5,12 +5,13 @@
 #include <ATen/Utils.h>
 #include <ATen/core/ATenGeneral.h>
 #include <ATen/core/Generator.h>
-#include <ATen/CPUGenerator.h>
+#include <ATen/CPUGeneratorImpl.h>
 #include <ATen/core/LegacyTypeDispatch.h>
 #include <ATen/detail/CUDAHooksInterface.h>
 #include <ATen/detail/HIPHooksInterface.h>
 #include <c10/util/Exception.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
+#include <c10/core/QEngine.h>
 
 #include <memory>
 #include <mutex>
@@ -24,14 +25,14 @@ class CAFFE2_API Context {
  public:
   Context();
 
-  Generator & defaultGenerator(Device device) {
+  const Generator& defaultGenerator(Device device) {
     DeviceType device_type = device.type();
     initCUDAIfNeeded(device_type);
     initHIPIfNeeded(device_type);
     if (device_type == at::kCPU) {
-      return *at::detail::getDefaultCPUGenerator();
+      return at::detail::getDefaultCPUGenerator();
     } else if (device_type == at::kCUDA) {
-      return *at::detail::getCUDAHooks().getDefaultCUDAGenerator(device.index());
+      return at::detail::getCUDAHooks().getDefaultCUDAGenerator(device.index());
     } else {
       AT_ERROR(DeviceTypeName(device_type), " device type not enabled.");
     }
@@ -46,6 +47,9 @@ class CAFFE2_API Context {
     } else {
       AT_ERROR(DeviceTypeName(device_type), " device type not enabled.");
     }
+  }
+  bool isPinnedPtr(void* data) {
+    return detail::getCUDAHooks().isPinnedPtr(data);
   }
   bool hasOpenMP() const;
   bool hasMKL() const;
@@ -77,7 +81,9 @@ class CAFFE2_API Context {
     });
     return thh_state.get();
   }
-
+  const at::cuda::NVRTC& getNVRTC() {
+    return detail::getCUDAHooks().nvrtc();
+  }
   THCState* getTHCState() {
     // AT_ASSERT(thc_state);
     return thc_state.get();
@@ -94,11 +100,26 @@ class CAFFE2_API Context {
   // to test this instead
   bool userEnabledCuDNN() const;
   void setUserEnabledCuDNN(bool e);
+  bool userEnabledMkldnn() const;
+  void setUserEnabledMkldnn(bool e);
   bool benchmarkCuDNN() const;
   void setBenchmarkCuDNN(bool);
   bool deterministicCuDNN() const;
   void setDeterministicCuDNN(bool);
-private:
+  bool deterministic() const;
+  void setDeterministic(bool);
+  void alertNotDeterministic(c10::string_view const& caller);
+  at::QEngine qEngine() const;
+  void setQEngine(at::QEngine e);
+  const std::vector<at::QEngine>& supportedQEngines() const;
+  bool isXNNPACKAvailable() const;
+  // This method is used to release the original weight after pre-packing.
+  // It should be called once before loading/running the model.
+  // NB: By default it is set to true for mobile builds.
+  void setReleaseWeightsWhenPrepacking(bool e);
+  bool releaseWeightsWhenPrepacking() const;
+
+ private:
   void initCUDAIfNeeded(DeviceType p) {
     if (p == DeviceType::CUDA) {
       lazyInitCUDA();
@@ -113,7 +134,15 @@ private:
   std::once_flag thh_init;
   bool enabled_cudnn = true;
   bool deterministic_cudnn = false;
+  bool _deterministic = false;
   bool benchmark_cudnn = false;
+  bool enabled_mkldnn = true;
+  #ifdef C10_MOBILE
+  bool release_original_weights = true;
+  #else
+  bool release_original_weights = false;
+  #endif
+  c10::optional<at::QEngine> quantized_engine = c10::nullopt;
   std::unique_ptr<THCState, void(*)(THCState*)> thc_state;
   std::unique_ptr<THHState, void(*)(THHState*)> thh_state;
 };
@@ -126,24 +155,24 @@ static inline void init() {
 
 CAFFE2_API Allocator* getCPUAllocator();
 
-static inline DeprecatedTypeProperties& getNonVariableDeprecatedTypeProperties(Backend p, ScalarType s) {
+static inline DeprecatedTypeProperties& getDeprecatedTypeProperties(Backend p, ScalarType s) {
   return globalDeprecatedTypePropertiesRegistry().getDeprecatedTypeProperties(
-      p, s, /*is_variable*/false);
+      p, s);
 }
 
 static inline DeprecatedTypeProperties& CPU(ScalarType s) {
   return globalDeprecatedTypePropertiesRegistry().getDeprecatedTypeProperties(
-      Backend::CPU, s, /*is_variable*/false);
+      Backend::CPU, s);
 }
 
 static inline DeprecatedTypeProperties& CUDA(ScalarType s) {
   return globalDeprecatedTypePropertiesRegistry().getDeprecatedTypeProperties(
-      Backend::CUDA, s, /*is_variable*/false);
+      Backend::CUDA, s);
 }
 
 static inline DeprecatedTypeProperties& HIP(ScalarType s) {
   return globalDeprecatedTypePropertiesRegistry().getDeprecatedTypeProperties(
-      Backend::HIP, s, /*is_variable*/false);
+      Backend::HIP, s);
 }
 
 static inline bool hasCUDA() {
@@ -199,10 +228,10 @@ static inline bool hasMKLDNN() {
 }
 
 static inline void manual_seed(uint64_t seed) {
-  auto& gen = globalContext().defaultGenerator(DeviceType::CPU);
+  auto gen = globalContext().defaultGenerator(DeviceType::CPU);
   {
     // See Note [Acquire lock when using random generators]
-    std::lock_guard<std::mutex> lock(gen.mutex_);
+    std::lock_guard<std::mutex> lock(gen.mutex());
     gen.set_current_seed(seed);
   }
   // NB: Sometimes we build with CUDA, but we don't have any GPUs
@@ -210,10 +239,10 @@ static inline void manual_seed(uint64_t seed) {
   int num_gpus = detail::getCUDAHooks().getNumGPUs();
   if (hasCUDA() && num_gpus > 0) {
     for (int i = 0; i < num_gpus; i++) {
-      auto& cuda_gen = globalContext().defaultGenerator(Device(at::kCUDA, i));
+      auto cuda_gen = globalContext().defaultGenerator(Device(at::kCUDA, i));
       {
         // See Note [Acquire lock when using random generators]
-        std::lock_guard<std::mutex> lock(cuda_gen.mutex_);
+        std::lock_guard<std::mutex> lock(cuda_gen.mutex());
         cuda_gen.set_current_seed(seed);
       }
     }

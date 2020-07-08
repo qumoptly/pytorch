@@ -15,13 +15,17 @@ Tensor mkldnn_to_dense(const Tensor& mkldnn_tensor) {
   Tensor cpu_tensor = at::empty(
     std::vector<int64_t>(dims.begin(), dims.end()),
     mkldnn_tensor.options().layout(c10::kStrided));
-  stensor.to_public(cpu_tensor.template data<float>());
+  if (stensor.is_empty()) return cpu_tensor;
+  auto pub_tensor = stensor.to_public(cpu_tensor.template data_ptr<float>());
+  cpu_tensor.as_strided_(dims, pub_tensor.get_strides());
   return cpu_tensor;
 }
 
 Tensor dense_to_mkldnn(const Tensor& cpu_tensor) {
-  AT_ASSERTM(cpu_tensor.type_id() == CPUTensorId(),
-             "dense_to_mkldnn expects dense CPU tensor input");
+  AT_ASSERTM(cpu_tensor.device().type() == DeviceType::CPU,
+             "dense_to_mkldnn expects CPU tensor input");
+  AT_ASSERTM(cpu_tensor.layout() == Layout::Strided,
+             "dense_to_mkldnn expects strided tensor input");
   AT_ASSERTM(cpu_tensor.scalar_type() == ScalarType::Float,
              "dense_to_mkldnn expects float tensor input");
   AT_ASSERTM(cpu_tensor.dim() <= 5,
@@ -32,7 +36,7 @@ Tensor dense_to_mkldnn(const Tensor& cpu_tensor) {
   ideep::tensor& dtensor = itensor_from_mkldnn(mkldnn_tensor);
   dtensor.feed_from(dtensor.get_dims(),
                     ideep::tensor::data_type::f32,
-                    (cpu_tensor_cont.template data<float>()));
+                    (cpu_tensor_cont.template data_ptr<float>()));
   return mkldnn_tensor;
 }
 
@@ -53,10 +57,20 @@ Tensor mkldnn_reorder_conv2d_weight(
   auto padding_vec = expand_param_if_needed(padding, "padding", 2);
   auto dilation_vec = expand_param_if_needed(dilation, "dilation", 2);
 
-  ideep::tensor w = itensor_from_mkldnn(self).as_weights();
-  w.make_group(groups);
-  ideep::tensor::descriptor desc =
-      ideep::convolution_forward::expected_weights_descriptor(
+  auto w = itensor_from_mkldnn(self);
+
+  // Legacy mkldnn conv2d jitted module may contain a 5-d weight with an extra
+  // dimension when groups > 1, having dimension [g, o/g, i, h, w] instead of
+  // [o, i, h, w]. Ideally we should reorder the weight back in serialization.
+  // For backward compatibility, we squash the first two dims (g * o/g) back to
+  // its original form.
+  if (w.ndims() == 5) {
+    auto wdims = w.get_dims();
+    w.reshape({wdims[0] * wdims[1], wdims[2], wdims[3], wdims[4]});
+  }
+
+  auto desc =
+      ideep::convolution_forward::expected_weights_desc(
           w.get_dims(),
           w.get_data_type(),
           {stride_vec.cbegin(), stride_vec.cend()},
@@ -66,7 +80,7 @@ Tensor mkldnn_reorder_conv2d_weight(
           groups,
           ideep::algorithm::convolution_direct);
   ideep::tensor result;
-  result.init<AllocForMKLDNN>(desc);
+  result.init(desc);
   result.feed_from(w);
 
   return new_with_itensor_mkldnn(std::move(result), self.options());

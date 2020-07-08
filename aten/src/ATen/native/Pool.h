@@ -1,6 +1,7 @@
 #include <ATen/ATen.h>
 #include <ATen/Parallel.h>
 #include <ATen/NativeFunctions.h>
+#include <ATen/div_rtn.h>
 #include <tuple>
 
 #pragma once
@@ -21,17 +22,28 @@ safe_downcast(src_t v)
 }
 
 template<typename T>
-static inline T pooling_output_shape(
-        T inputSize, T kernelSize, T pad, T stride, T dilation, bool ceil_mode) {
-    T outputSize = ((inputSize + 2 * pad - dilation * (kernelSize - 1) - 1 + (ceil_mode ? stride - 1 : 0)) / stride + 1);
-    if (pad) {
+static inline T pooling_output_shape_pad_lr(
+        T inputSize, T kernelSize, T pad_l, T pad_r, T stride, T dilation,
+        bool ceil_mode) {
+    T outputSize = div_rtn<T>(
+        inputSize + pad_l + pad_r - dilation * (kernelSize - 1) - 1 +
+        (ceil_mode ? stride - 1 : 0), stride) + 1;
+    if (pad_l) {
         // ensure that the last pooling starts inside the image
         // needed to avoid problems in ceil mode
-        if ((outputSize - 1) * stride >= inputSize + pad)
+        if ((outputSize - 1) * stride >= inputSize + pad_l)
           --outputSize;
     }
     return outputSize;
 }
+
+template<typename T>
+static inline T pooling_output_shape(
+      T inputSize, T kernelSize, T pad, T stride, T dilation, bool ceil_mode) {
+    return pooling_output_shape_pad_lr(
+        inputSize, kernelSize, pad, pad, stride, dilation, ceil_mode);
+}
+
 
 // AveragePool2d/DilatedMaxPool2d (forward)
 static inline void
@@ -94,18 +106,9 @@ max_pool2d_backward_shape_check(
   check_dim_size(gradOutput, ndim, ndim-2, outputHeight);
   check_dim_size(gradOutput, ndim, ndim-1, outputWidth);
 
-  // different CUDA/CPU behavior from TH
-  if (cuda) {
-    check_dim_size(indices, 4, 0, nbatch);
-    check_dim_size(indices, 4, 1, nOutputPlane);
-    check_dim_size(indices, 4, 2, outputHeight);
-    check_dim_size(indices, 4, 3, outputWidth);
-  }
-  else {
-    check_dim_size(indices, ndim, ndim-3, nOutputPlane);
-    check_dim_size(indices, ndim, ndim-2, outputHeight);
-    check_dim_size(indices, ndim, ndim-1, outputWidth);
-  }
+  check_dim_size(indices, ndim, ndim-3, nOutputPlane);
+  check_dim_size(indices, ndim, ndim-2, outputHeight);
+  check_dim_size(indices, ndim, ndim-1, outputWidth);
 }
 
 // AveragePool2d (backward)

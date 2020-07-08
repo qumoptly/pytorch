@@ -4,7 +4,7 @@
 #include <vector>
 
 #include <ATen/div_rtn.h>
-#include "ATen/ATen.h"
+#include <ATen/ATen.h>
 
 #define TORCH_CHECK_DIM_SIZE(T, DIM, DIM_SIZE, SIZE) \
   TORCH_CHECK(                                       \
@@ -72,11 +72,11 @@ std::vector<int64_t> get_output_size(
   return output_size;
 }
 /*
-  conv_dilated_shape_check - check user-input to dilated convolution
+  slow_conv_dilated_shape_check - check user-input to dilated convolution
   forward and backward functions.
 */
 template <int64_t dim>
-void conv_dilated_shape_check(
+void slow_conv_dilated_shape_check(
     const Tensor& input,
     const Tensor& weight,
     const Tensor& bias,

@@ -1,4 +1,4 @@
-r""""Contains definitions of the methods used by the _DataLoaderIter workers to
+r""""Contains definitions of the methods used by the _BaseDataLoaderIter workers to
 collate samples fetched from dataset into Tensor(s).
 
 These **needs** to be in global scope since Py2 doesn't support serializing
@@ -14,7 +14,6 @@ np_str_obj_array_pattern = re.compile(r'[SaUO]')
 
 def default_convert(data):
     r"""Converts each NumPy array data field into a tensor"""
-
     elem_type = type(data)
     if isinstance(data, torch.Tensor):
         return data
@@ -28,7 +27,7 @@ def default_convert(data):
     elif isinstance(data, container_abcs.Mapping):
         return {key: default_convert(data[key]) for key in data}
     elif isinstance(data, tuple) and hasattr(data, '_fields'):  # namedtuple
-        return elem_type(default_convert(d) for d in data)
+        return elem_type(*(default_convert(d) for d in data))
     elif isinstance(data, container_abcs.Sequence) and not isinstance(data, string_classes):
         return [default_convert(d) for d in data]
     else:
@@ -56,8 +55,7 @@ def default_collate(batch):
         return torch.stack(batch, 0, out=out)
     elif elem_type.__module__ == 'numpy' and elem_type.__name__ != 'str_' \
             and elem_type.__name__ != 'string_':
-        elem = batch[0]
-        if elem_type.__name__ == 'ndarray':
+        if elem_type.__name__ == 'ndarray' or elem_type.__name__ == 'memmap':
             # array of string classes and object
             if np_str_obj_array_pattern.search(elem.dtype.str) is not None:
                 raise TypeError(default_collate_err_msg_format.format(elem.dtype))
@@ -76,6 +74,11 @@ def default_collate(batch):
     elif isinstance(elem, tuple) and hasattr(elem, '_fields'):  # namedtuple
         return elem_type(*(default_collate(samples) for samples in zip(*batch)))
     elif isinstance(elem, container_abcs.Sequence):
+        # check to make sure that the elements in batch have consistent size
+        it = iter(batch)
+        elem_size = len(next(it))
+        if not all(len(elem) == elem_size for elem in it):
+            raise RuntimeError('each element in list of batch should be of equal size')
         transposed = zip(*batch)
         return [default_collate(samples) for samples in transposed]
 

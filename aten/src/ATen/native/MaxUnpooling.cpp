@@ -1,5 +1,6 @@
 #include <ATen/ATen.h>
 #include <ATen/NativeFunctions.h>
+#include <ATen/Parallel.h>
 #include <tuple>
 
 namespace at {
@@ -26,14 +27,16 @@ Tensor max_unpooling2d_forward_out_cpu_frame(
   int64_t inputHeight = input.size(dimh);
   int64_t inputWidth = input.size(dimw);
 
-  auto* rawInput = input.data<scalar_t>();
-  auto* rawIndices = indices.data<int64_t>();
-  auto* rawOutput = output.data<scalar_t>();
+  auto* rawInput = input.data_ptr<scalar_t>();
+  auto* rawIndices = indices.data_ptr<int64_t>();
+  auto* rawOutput = output.data_ptr<scalar_t>();
+
+  at::internal::lazy_init_num_threads();
 
   for (int64_t n = 0; n < numBatch; n++) {
     int64_t nOutputOffset = n * numChannels * owidth * oheight;
     int64_t nInputOffset = n * numChannels * inputWidth * inputHeight;
-    int64_t k;
+    int64_t k = 0;
     bool has_error = false;
     int64_t error_index = 0;
 #pragma omp parallel for private(k)
@@ -100,7 +103,6 @@ Tensor& max_unpooling2d_forward_out_cpu(
   auto indices = indices_.contiguous();
 
   if (self.ndimension() == 3) {
-    int64_t numBatch = 1;
     int64_t numChannels = self.size(0);
     output.resize_({numChannels, oheight, owidth});
   } else {
@@ -134,13 +136,7 @@ Tensor max_unpooling3d_forward_out_cpu_frame(
     const Tensor& indices,
     int64_t oT,
     int64_t oH,
-    int64_t oW,
-    int64_t dT,
-    int64_t dH,
-    int64_t dW,
-    int64_t pT,
-    int64_t pH,
-    int64_t pW) {
+    int64_t oW) {
   int64_t nBatch = 1;
   int64_t dimw = 3;
   int64_t dimh = 2;
@@ -158,14 +154,16 @@ Tensor max_unpooling3d_forward_out_cpu_frame(
   int64_t iH = input.size(dimh);
   int64_t iW = input.size(dimw);
 
-  scalar_t* input_data = input.data<scalar_t>();
-  scalar_t* output_data = output.data<scalar_t>();
-  int64_t* indices_data = indices.data<int64_t>();
+  scalar_t* input_data = input.data_ptr<scalar_t>();
+  scalar_t* output_data = output.data_ptr<scalar_t>();
+  int64_t* indices_data = indices.data_ptr<int64_t>();
+
+  at::internal::lazy_init_num_threads();
 
   for (int64_t p = 0; p < nBatch; p++) {
     int64_t inputOffset = p * nSlices * iT * iW * iH;
     int64_t outputOffset = p * nSlices * oT * oW * oH;
-    int64_t k;
+    int64_t k = 0;
     bool has_error = false;
     int error_index = 0;
 #pragma omp parallel for private(k)
@@ -318,13 +316,7 @@ Tensor& max_unpooling3d_forward_out_cpu(
             indices,
             oT,
             oH,
-            oW,
-            stride[0],
-            stride[1],
-            stride[2],
-            padding[0],
-            padding[1],
-            padding[2]);
+            oW);
       }));
   return output;
 }
@@ -353,7 +345,9 @@ static void max_unpooling2d_backward_out_cpu_frame(
     int64_t owidth) {
   bool has_error = false;
   int64_t error_index = 0;
-  int k;
+  int k = 0;
+
+  at::internal::lazy_init_num_threads();
 #pragma omp parallel for private(k)
   for (k = 0; k < nslices; k++) {
     scalar_t* gradInput_p_k = gradInput_p + k * iwidth * iheight;
@@ -449,9 +443,9 @@ Tensor& max_unpooling2d_backward_out_cpu(
           auto inputOffset = p * nslices * iheight * iwidth;
           auto outputOffset = p * nslices * oheight * owidth;
           max_unpooling2d_backward_out_cpu_frame<scalar_t>(
-              grad_input.data<scalar_t>() + inputOffset,
-              grad_output.data<scalar_t>() + outputOffset,
-              indices.data<int64_t>() + inputOffset,
+              grad_input.data_ptr<scalar_t>() + inputOffset,
+              grad_output.data_ptr<scalar_t>() + outputOffset,
+              indices.data_ptr<int64_t>() + inputOffset,
               nslices,
               iheight,
               iwidth,
@@ -467,7 +461,7 @@ Tensor max_unpooling2d_backward_cpu(
     const Tensor& self,
     const Tensor& indices,
     IntArrayRef output_size) {
-  auto grad_input = at::empty_like(self);
+  auto grad_input = at::empty_like(self, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
   max_unpooling2d_backward_out_cpu(
       grad_input, grad_output, self, indices, output_size);
   return grad_input;
@@ -485,9 +479,12 @@ static void max_unpooling3d_backward_out_cpu_frame(
     int64_t oT,
     int64_t oH,
     int64_t oW) {
-  int k;
+  int k = 0;
   bool has_error = false;
   int error_index = 0;
+
+  at::internal::lazy_init_num_threads();
+
 #pragma omp parallel for private(k)
   for (k = 0; k < nslices; k++) {
     scalar_t* gradInput_p_k = gradInput_p + k * iT * iH * iW;
@@ -579,9 +576,9 @@ Tensor& max_unpooling3d_backward_out_cpu(
           int inputOffset = p * nslices * iT * iH * iW;
           int outputOffset = p * nslices * oT * oH * oW;
           max_unpooling3d_backward_out_cpu_frame<scalar_t>(
-              grad_input.data<scalar_t>() + inputOffset,
-              grad_output.data<scalar_t>() + outputOffset,
-              indices.data<int64_t>() + inputOffset,
+              grad_input.data_ptr<scalar_t>() + inputOffset,
+              grad_output.data_ptr<scalar_t>() + outputOffset,
+              indices.data_ptr<int64_t>() + inputOffset,
               nslices,
               iT,
               iH,
@@ -601,7 +598,7 @@ Tensor max_unpooling3d_backward_cpu(
     IntArrayRef output_size,
     IntArrayRef stride,
     IntArrayRef padding) {
-  auto grad_input = at::empty_like(self);
+  auto grad_input = at::empty_like(self, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
   max_unpooling3d_backward_out_cpu(
       grad_input, grad_output, self, indices, output_size, stride, padding);
   return grad_input;

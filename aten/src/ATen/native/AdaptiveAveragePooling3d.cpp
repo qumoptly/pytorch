@@ -1,5 +1,6 @@
 #include <ATen/ATen.h>
 #include <ATen/NativeFunctions.h>
+#include <ATen/Parallel.h>
 
 namespace at {
 namespace native {
@@ -29,7 +30,8 @@ static void adaptive_avg_pool3d_out_frame(
     int64_t istrideT,
     int64_t istrideH,
     int64_t istrideW) {
-  int64_t d;
+  int64_t d = 0;
+  at::internal::lazy_init_num_threads();
 #pragma omp parallel for private(d)
   for (d = 0; d < sizeD; d++) {
     /* loop over output */
@@ -116,8 +118,8 @@ void adaptive_avg_pool3d_out_cpu_template(
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(
         input.scalar_type(), "adaptive_avg_pool3d_cpu", [&] {
-          auto input_data = input.data<scalar_t>();
-          auto output_data = output.data<scalar_t>();
+          auto input_data = input.data_ptr<scalar_t>();
+          auto output_data = output.data_ptr<scalar_t>();
           adaptive_avg_pool3d_out_frame<scalar_t>(
               input_data,
               output_data,
@@ -135,13 +137,14 @@ void adaptive_avg_pool3d_out_cpu_template(
         });
   } else {
     output.resize_({input.size(-5), sizeD, osizeT, osizeH, osizeW});
-    int64_t b;
+    at::internal::lazy_init_num_threads();
+    int64_t b = 0;
 #pragma omp parallel for private(b)
     for (b = 0; b < input.size(0); b++) {
       AT_DISPATCH_FLOATING_TYPES_AND_HALF(
           input.scalar_type(), "adaptive_avg_pool3d_cpu", [&] {
-            auto input_data = input.data<scalar_t>();
-            auto output_data = output.data<scalar_t>();
+            auto input_data = input.data_ptr<scalar_t>();
+            auto output_data = output.data_ptr<scalar_t>();
             adaptive_avg_pool3d_out_frame<scalar_t>(
                 input_data + b * input.stride(0),
                 output_data + b * sizeD * osizeT * osizeH * osizeW,
@@ -172,7 +175,8 @@ static void adaptive_avg_pool3d_backward_out_frame(
     int64_t osizeT,
     int64_t osizeH,
     int64_t osizeW) {
-  int64_t d;
+  int64_t d = 0;
+  at::internal::lazy_init_num_threads();
 #pragma omp parallel for private(d)
   for (d = 0; d < sizeD; d++) {
     scalar_t* gradInput_p_d = gradInput_p + d * isizeT * isizeW * isizeH;
@@ -236,8 +240,8 @@ Tensor& adaptive_avg_pool3d_backward_out_cpu_template(
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(
         input.scalar_type(), "adaptive_avg_pool3d_backward_cpu", [&] {
           /* get raw pointers */
-          scalar_t* gradInput_data = gradInput.data<scalar_t>();
-          scalar_t* gradOutput_data = gradOutput.data<scalar_t>();
+          scalar_t* gradInput_data = gradInput.data_ptr<scalar_t>();
+          scalar_t* gradOutput_data = gradOutput.data_ptr<scalar_t>();
 
           adaptive_avg_pool3d_backward_out_frame<scalar_t>(
               gradInput_data,
@@ -251,14 +255,15 @@ Tensor& adaptive_avg_pool3d_backward_out_cpu_template(
               osizeW);
         });
   } else {
-    int64_t b;
+    at::internal::lazy_init_num_threads();
+    int64_t b = 0;
 #pragma omp parallel for private(b)
     for (b = 0; b < input.size(0); b++) {
       AT_DISPATCH_FLOATING_TYPES_AND_HALF(
           input.scalar_type(), "adaptive_avg_pool3d_backward_cpu", [&] {
             /* get raw pointers */
-            scalar_t* gradInput_data = gradInput.data<scalar_t>();
-            scalar_t* gradOutput_data = gradOutput.data<scalar_t>();
+            scalar_t* gradInput_data = gradInput.data_ptr<scalar_t>();
+            scalar_t* gradOutput_data = gradOutput.data_ptr<scalar_t>();
             adaptive_avg_pool3d_backward_out_frame<scalar_t>(
                 gradInput_data + b * sizeD * isizeT * isizeH * isizeW,
                 gradOutput_data + b * sizeD * osizeT * osizeH * osizeW,
@@ -303,7 +308,7 @@ Tensor& adaptive_avg_pool3d_backward_out_cpu(
 Tensor adaptive_avg_pool3d_backward_cpu(
     const Tensor& gradOutput_,
     const Tensor& input) {
-  auto gradInput = at::zeros_like(input);
+  auto gradInput = at::zeros_like(input, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
   adaptive_avg_pool3d_backward_out_cpu_template(gradInput, gradOutput_, input);
   return gradInput;
 }

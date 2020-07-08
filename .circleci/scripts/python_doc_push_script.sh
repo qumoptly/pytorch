@@ -7,10 +7,9 @@ sudo apt-get -y install expect-dev
 # This is where the local pytorch install in the docker image is located
 pt_checkout="/var/lib/jenkins/workspace"
 
-echo "python_doc_push_script.sh: Invoked with $*"
+source "$pt_checkout/.jenkins/pytorch/common_utils.sh"
 
-git clone https://github.com/pytorch/pytorch.github.io -b site
-pushd pytorch.github.io
+echo "python_doc_push_script.sh: Invoked with $*"
 
 set -ex
 
@@ -34,13 +33,23 @@ if [ "$version" == "master" ]; then
   is_master_doc=true
 fi
 
-# Argument 3: (optional) If present, we will NOT do any pushing. Used for testing.
+# Argument 3: The branch to push to. Usually is "site"
+branch="$3"
+if [ -z "$branch" ]; then
+echo "error: python_doc_push_script.sh: branch (arg3) not specified"
+  exit 1
+fi
+
+# Argument 4: (optional) If present, we will NOT do any pushing. Used for testing.
 dry_run=false
-if [ "$3" != "" ]; then
+if [ "$4" != "" ]; then
   dry_run=true
 fi
 
 echo "install_path: $install_path  version: $version  dry_run: $dry_run"
+
+git clone https://github.com/pytorch/pytorch.github.io -b $branch
+pushd pytorch.github.io
 
 export LC_ALL=C
 export PATH=/opt/conda/bin:$PATH
@@ -52,11 +61,7 @@ pip install -q https://s3.amazonaws.com/ossci-linux/wheels/tensorboard-1.14.0a0-
 
 # Get all the documentation sources, put them in one place
 pushd "$pt_checkout"
-git clone https://github.com/pytorch/vision
-pushd vision
-conda install -q pillow
-time python setup.py install
-popd
+checkout_install_torchvision
 pushd docs
 rm -rf source/torchvision
 cp -a ../vision/docs/source source/torchvision
@@ -64,8 +69,30 @@ cp -a ../vision/docs/source source/torchvision
 # Build the docs
 pip -q install -r requirements.txt || true
 if [ "$is_master_doc" = true ]; then
+  # TODO: fix gh-38011 then enable this which changes warnings into errors
+  # export SPHINXOPTS="-WT --keep-going"
   make html
+  make coverage
+  # Now we have the coverage report, we need to make sure it is empty.
+  # Count the number of lines in the file and turn that number into a variable
+  # $lines. The `cut -f1 ...` is to only parse the number, not the filename
+  # Skip the report header by subtracting 2: the header will be output even if
+  # there are no undocumented items.
+  #
+  # Also: see docs/source/conf.py for "coverage_ignore*" items, which should
+  # be documented then removed from there.
+  lines=$(wc -l build/coverage/python.txt 2>/dev/null |cut -f1 -d' ')
+  undocumented=$(($lines - 2))
+  if [ $undocumented -lt 0 ]; then
+    echo coverage output not found
+    exit 1
+  elif [ $undocumented -gt 0 ]; then
+    echo undocumented objects found:
+    cat build/coverage/python.txt
+    exit 1
+  fi
 else
+  # Don't fail the build on coverage problems
   make html-stable
 fi
 
@@ -83,6 +110,12 @@ else
   find "$install_path" -name "*.html" -print0 | xargs -0 perl -pi -w -e "s@master\s+\((\d\.\d\.[A-Fa-f0-9]+\+[A-Fa-f0-9]+)\s+\)@<a href='http://pytorch.org/docs/versions.html'>$version \&#x25BC</a>@g"
 fi
 
+# Prevent Google from indexing $install_path/_modules. This folder contains
+# generated source files.
+# NB: the following only works on gnu sed. The sed shipped with mac os is different.
+# One can `brew install gnu-sed` on a mac and then use "gsed" instead of "sed".
+find "$install_path/_modules" -name "*.html" -print0 | xargs -0 sed -i '/<head>/a \ \ <meta name="robots" content="noindex">'
+
 git add "$install_path" || true
 git status
 git config user.email "soumith+bot@pytorch.org"
@@ -92,10 +125,10 @@ git commit -m "auto-generating sphinx docs" || true
 git status
 
 if [ "$dry_run" = false ]; then
-  echo "Pushing to pytorch.github.io:site"
+  echo "Pushing to pytorch.github.io:$branch"
   set +x
 /usr/bin/expect <<DONE
-  spawn git push origin site
+  spawn git push origin $branch
   expect "Username*"
   send "pytorchbot\n"
   expect "Password*"

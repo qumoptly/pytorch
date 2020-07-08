@@ -1,4 +1,4 @@
-r""""Contains definitions of the methods used by the _DataLoaderIter workers.
+r""""Contains definitions of the methods used by the _BaseDataLoaderIter workers.
 
 These **needs** to be in global scope since Py2 doesn't support serializing
 static methods.
@@ -6,11 +6,11 @@ static methods.
 
 import torch
 import random
-import sys
 import os
 from collections import namedtuple
 from torch._six import queue
-from . import signal_handling, MP_STATUS_CHECK_INTERVAL, ExceptionWrapper, IS_WINDOWS
+from torch._utils import ExceptionWrapper
+from . import signal_handling, MP_STATUS_CHECK_INTERVAL, IS_WINDOWS
 
 if IS_WINDOWS:
     import ctypes
@@ -44,7 +44,7 @@ if IS_WINDOWS:
                 self.manager_dead = self.kernel32.WaitForSingleObject(self.manager_handle, 0) == 0
             return not self.manager_dead
 else:
-    class ManagerWatchdog(object):
+    class ManagerWatchdog(object):  # type: ignore[no-redef]
         def __init__(self):
             self.manager_pid = os.getppid()
             self.manager_dead = False
@@ -63,12 +63,19 @@ class WorkerInfo(object):
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
+        self.__keys = tuple(kwargs.keys())
         self.__initialized = True
 
     def __setattr__(self, key, val):
         if self.__initialized:
             raise RuntimeError("Cannot assign attributes to {} objects".format(self.__class__.__name__))
         return super(WorkerInfo, self).__setattr__(key, val)
+
+    def __repr__(self):
+        items = []
+        for k in self.__keys:
+            items.append('{}={}'.format(k, getattr(self, k)))
+        return '{}({})'.format(self.__class__.__name__, ', '.join(items))
 
 
 def get_worker_info():
@@ -111,7 +118,7 @@ def _worker_loop(dataset_kind, dataset, index_queue, data_queue, done_event,
     # logic of this function.
 
     try:
-        # Intialize C side signal handlers for SIGBUS and SIGSEGV. Python signal
+        # Initialize C side signal handlers for SIGBUS and SIGSEGV. Python signal
         # module's handlers are executed after Python returns from C low-level
         # handlers, likely when the same fatal signal had already happened
         # again.
@@ -136,7 +143,8 @@ def _worker_loop(dataset_kind, dataset, index_queue, data_queue, done_event,
 
             fetcher = _DatasetKind.create_fetcher(dataset_kind, dataset, auto_collation, collate_fn, drop_last)
         except Exception:
-            init_exception = ExceptionWrapper(sys.exc_info())
+            init_exception = ExceptionWrapper(
+                where="in DataLoader worker process {}".format(worker_id))
 
         # When using Iterable mode, some worker can exit earlier than others due
         # to the IterableDataset behaving differently for different workers.
@@ -186,7 +194,8 @@ def _worker_loop(dataset_kind, dataset, index_queue, data_queue, done_event,
                         # It is important that we don't store exc_info in a variable.
                         # `ExceptionWrapper` does the correct thing.
                         # See NOTE [ Python Traceback Reference Cycle Problem ]
-                        data = ExceptionWrapper(sys.exc_info())
+                        data = ExceptionWrapper(
+                            where="in DataLoader worker process {}".format(worker_id))
             data_queue.put((idx, data))
             del data, idx, index, r  # save memory
     except KeyboardInterrupt:

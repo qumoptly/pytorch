@@ -1,267 +1,70 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-import torch
-import torch.nn.quantized as nnq
-from torch.quantization import default_eval_fn, QConfig, default_qconfig, \
-    default_observer, quantize, prepare, convert
+# -*- coding: utf-8 -*-
 
-from common_utils import run_tests
-from common_quantization import QuantizationTestCase, SingleLayerLinearModel, \
-    TwoLayerLinearModel, NestedModel, WrappedModel, ManualQuantModel
+from torch.testing._internal.common_utils import run_tests
 
+# Quantized Tensor
+from quantization.test_quantized_tensor import TestQuantizedTensor  # noqa: F401
+# Quantized Op
+# TODO: merge test cases in quantization.test_quantized
+from quantization.test_quantized_op import TestQuantizedOps  # noqa: F401
+from quantization.test_quantized_op import TestQNNPackOps  # noqa: F401
+from quantization.test_quantized_op import TestQuantizedLinear  # noqa: F401
+from quantization.test_quantized_op import TestQuantizedConv  # noqa: F401
+from quantization.test_quantized_op import TestDynamicQuantizedLinear  # noqa: F401
+from quantization.test_quantized_op import TestComparatorOps  # noqa: F401
+from quantization.test_quantized_op import TestPadding  # noqa: F401
+from quantization.test_quantized_op import TestQuantizedEmbeddingBag  # noqa: F401
 
-calib_data = [torch.rand(20, 5, dtype=torch.float) for _ in range(20)]
+# Quantized Functional
+from quantization.test_quantized_functional import TestQuantizedFunctional  # noqa: F401
 
-class ModelQuantizeAPITest(QuantizationTestCase):
+# Quantized Module
+from quantization.test_quantized_module import TestStaticQuantizedModule  # noqa: F401
+from quantization.test_quantized_module import TestDynamicQuantizedModule  # noqa: F401
 
-    def test_single_layer(self):
-        r"""Quantize SingleLayerLinearModel which has one Linear module, make sure it is swapped
-        to nnq.Linear which is the quantized version of the module
-        """
-        model = SingleLayerLinearModel()
-        qconfig_dict = {
-            '': default_qconfig
-        }
-        model = prepare(model, qconfig_dict)
-        # Check if observers and quant/dequant nodes are inserted
-        self.checkNoPrepModules(model)
-        self.checkHasPrepModules(model.fc1)
-        self.checkObservers(model)
+# Quantization Aware Training
+from quantization.test_qat_module import TestQATModule  # noqa: F401
 
-        default_eval_fn(model, calib_data)
-        convert(model)
+# Quantization specific fusion passes
+from quantization.test_fusion_passes import TestFusionPasses  # noqa: F401
 
-        def checkQuantized(model):
-            self.checkNoPrepModules(model)
-            self.checkHasPrepModules(model.fc1)
-            self.checkQuantizedLinear(model.fc1)
-            default_eval_fn(model, calib_data)
+# Module
+# TODO: merge the fake quant per tensor and per channel test cases
+# TODO: some of the tests are actually operator tests, e.g. test_forward_per_tensor, and
+# should be moved to test_quantized_op
+from quantization.test_workflow_module import TestFakeQuantizePerTensor  # noqa: F401
+from quantization.test_workflow_module import TestFakeQuantizePerChannel  # noqa: F401
+from quantization.test_workflow_module import TestObserver  # noqa: F401
+# TODO: merge with TestObserver
+# TODO: some tests belong to test_quantize.py, e.g. test_record_observer
+from quantization.test_workflow_module import TestRecordHistogramObserver  # noqa: F401
+from quantization.test_workflow_module import TestDistributed  # noqa: F401
 
-        checkQuantized(model)
+# Workflow
+# 1. Eager mode quantization
+from quantization.test_quantize import TestPostTrainingStatic  # noqa: F401
+from quantization.test_quantize import TestPostTrainingDynamic  # noqa: F401
+from quantization.test_quantize import TestQuantizationAwareTraining  # noqa: F401
 
-        # test one line API
-        model = quantize(SingleLayerLinearModel(), default_eval_fn, calib_data, qconfig_dict)
-        checkQuantized(model)
+# TODO: merge with other tests in test_quantize.py?
+from quantization.test_quantize import TestFunctionalModule  # noqa: F401
+from quantization.test_quantize import TestFusion  # noqa: F401
+from quantization.test_quantize import TestModelNumerics  # noqa: F401
+from quantization.test_quantize import TestQuantizeONNXExport  # noqa: F401
+from quantization.test_quantize import TestDeprecatedJitQuantized  # noqa: F401
 
-    def test_two_layers(self):
-        r"""TwoLayerLinearModel has two Linear modules but we only quantize the second one
-        `fc2`, and `fc1`is not quantized
-        """
-        model = TwoLayerLinearModel()
-        qconfig_dict = {
-            'fc2': default_qconfig
-        }
-        model = prepare(model, qconfig_dict)
+# 2. Graph mode quantization
+from quantization.test_quantize_jit import TestQuantizeJit  # noqa: F401
+from quantization.test_quantize_jit import TestQuantizeJitPasses  # noqa: F401
+from quantization.test_quantize_jit import TestQuantizeJitOps  # noqa: F401
+from quantization.test_quantize_jit import TestQuantizeDynamicJitPasses  # noqa: F401
+from quantization.test_quantize_jit import TestQuantizeDynamicJitOps  # noqaa: F401
 
-        self.checkNoPrepModules(model)
-        self.checkObservers(model)
-        self.checkNoPrepModules(model.fc1)
-        self.checkHasPrepModules(model.fc2)
+# Tooling: numric_suite
+from quantization.test_numeric_suite import TestEagerModeNumericSuite  # noqa: F401
 
-        default_eval_fn(model, calib_data)
-        convert(model)
-
-        def checkQuantized(model):
-            self.checkNoPrepModules(model)
-            self.checkNoPrepModules(model.fc1)
-            self.checkHasPrepModules(model.fc2)
-            self.assertEqual(type(model.fc1), torch.nn.Linear)
-            self.checkQuantizedLinear(model.fc2)
-            default_eval_fn(model, calib_data)
-
-        checkQuantized(model)
-
-        # test one line API
-        model = quantize(TwoLayerLinearModel(), default_eval_fn, calib_data, qconfig_dict)
-        checkQuantized(model)
-
-    def test_nested1(self):
-        r"""Test quantization for nested model, top level 'fc3' and
-        'fc1' of submodule 'sub2', 'sub2.fc2' is not quantized
-        """
-        model = NestedModel()
-        qconfig_dict = {
-            'fc3': default_qconfig,
-            'sub2.fc1': default_qconfig
-        }
-
-        def checkPrepModules(model, before_calib=False):
-            if before_calib:
-                self.checkObservers(model)
-            self.checkNoPrepModules(model)
-            self.checkNoPrepModules(model.sub1)
-            self.checkNoPrepModules(model.sub1.fc)
-            self.checkNoPrepModules(model.sub1.relu)
-            self.checkNoPrepModules(model.sub2)
-            self.checkHasPrepModules(model.sub2.fc1)
-            self.checkNoPrepModules(model.sub2.fc2)
-            self.checkHasPrepModules(model.fc3)
-
-        model = prepare(model, qconfig_dict)
-        checkPrepModules(model, True)
-        default_eval_fn(model, calib_data)
-        convert(model)
-
-        def checkQuantized(model):
-            checkPrepModules(model)
-            self.checkLinear(model.sub1.fc)
-            self.checkQuantizedLinear(model.fc3)
-            self.checkQuantizedLinear(model.sub2.fc1)
-            self.checkLinear(model.sub2.fc2)
-            default_eval_fn(model, calib_data)
-
-        checkQuantized(model)
-
-        # test one line API
-        model = quantize(NestedModel(), default_eval_fn, calib_data, qconfig_dict)
-        checkQuantized(model)
-
-
-    def test_nested2(self):
-        r"""Another test case for quantized, we will quantize all submodules
-        of submodule sub2, this will include redundant quant/dequant, to
-        remove them we need to manually call QuantWrapper or insert
-        QuantStub/DeQuantStub, see `test_quant_dequant_wrapper` and
-        `test_manual`
-        """
-        model = NestedModel()
-        qconfig_dict = {
-            'fc3': default_qconfig,
-            'sub2': default_qconfig
-        }
-        model = prepare(model, qconfig_dict)
-
-        def checkPrepModules(model, before_calib=False):
-            if before_calib:
-                self.checkObservers(model)
-            self.checkNoPrepModules(model)
-            self.checkNoPrepModules(model.sub1)
-            self.checkNoPrepModules(model.sub1.fc)
-            self.checkNoPrepModules(model.sub1.relu)
-            self.checkNoPrepModules(model.sub2)
-            self.checkHasPrepModules(model.sub2.fc1)
-            self.checkHasPrepModules(model.sub2.fc2)
-            self.checkHasPrepModules(model.fc3)
-
-        checkPrepModules(model, True)
-
-        default_eval_fn(model, calib_data)
-        convert(model)
-
-        def checkQuantized(model):
-            checkPrepModules(model)
-            self.checkLinear(model.sub1.fc)
-            self.assertEqual(type(model.sub1.relu), torch.nn.ReLU)
-            self.checkQuantizedLinear(model.sub2.fc1)
-            self.checkQuantizedLinear(model.sub2.fc2)
-            self.checkQuantizedLinear(model.fc3)
-            default_eval_fn(model, calib_data)
-
-        checkQuantized(model)
-
-        # test one line API
-        model = quantize(NestedModel(), default_eval_fn, calib_data, qconfig_dict)
-        checkQuantized(model)
-
-    def test_nested3(self):
-        r"""More complicated nested test case with child qconfig overrides
-        parent qconfig
-        """
-        model = NestedModel()
-        custum_options = {
-            'dtype': torch.quint8,
-            'qscheme': torch.per_tensor_affine
-        }
-        custom_qconfig = QConfig(weight=default_observer(),
-                                 activation=default_observer(**custum_options))
-        qconfig_dict = {
-            'fc3': default_qconfig,
-            'sub2': default_qconfig,
-            'sub2.fc1': custom_qconfig
-        }
-        model = prepare(model, qconfig_dict)
-
-        def checkPrepModules(model, before_calib=False):
-            if before_calib:
-                self.checkObservers(model)
-            self.checkNoPrepModules(model)
-            self.checkNoPrepModules(model.sub1)
-            self.checkNoPrepModules(model.sub1.fc)
-            self.checkNoPrepModules(model.sub1.relu)
-            self.checkNoPrepModules(model.sub2)
-            self.checkHasPrepModules(model.sub2.fc1)
-            self.checkHasPrepModules(model.sub2.fc2)
-            self.checkHasPrepModules(model.fc3)
-
-        checkPrepModules(model, True)
-
-        default_eval_fn(model, calib_data)
-        convert(model)
-
-        def checkQuantized(model):
-            checkPrepModules(model)
-            self.checkQuantizedLinear(model.sub2.fc1)
-            self.checkQuantizedLinear(model.sub2.fc2)
-            self.checkQuantizedLinear(model.fc3)
-            default_eval_fn(model, calib_data)
-
-        checkQuantized(model)
-
-        # test one line API
-        model = quantize(NestedModel(), default_eval_fn, calib_data, qconfig_dict)
-        checkQuantized(model)
-
-    def test_quant_wrapper(self):
-        r"""User need to modify the original code with QuantWrapper,
-        and call the quantization utility functions.
-        """
-        model = WrappedModel()
-
-        # since we didn't provide qconfig_dict, the model is modified inplace
-        # but we can do `model = prepare(model)` as well
-        prepare(model)
-        self.checkObservers(model)
-
-        default_eval_fn(model, calib_data)
-        convert(model)
-
-        def checkQuantized(model):
-            self.checkLinear(model.fc)
-            self.checkQuantDequant(model.sub)
-            self.assertEqual(type(model.sub.module.fc1), nnq.Linear)
-            self.assertEqual(type(model.sub.module.fc2), nnq.Linear)
-            self.assertEqual(type(model.sub.module.relu), nnq.ReLU)
-            default_eval_fn(model, calib_data)
-
-        checkQuantized(model)
-
-        # test one line API
-        model = quantize(WrappedModel(), default_eval_fn, calib_data, {})
-        checkQuantized(model)
-
-
-    def test_manual(self):
-        r"""User inserts QuantStub and DeQuantStub in model code
-        and call the quantization utility functions.
-        """
-        model = ManualQuantModel()
-        # propagate the qconfig of parents to children, model is changed
-        # inplace
-        prepare(model)
-        self.checkObservers(model)
-
-        default_eval_fn(model, calib_data)
-        convert(model)
-
-        def checkQuantized(model):
-            self.assertEqual(type(model.fc), nnq.Linear)
-            default_eval_fn(model, calib_data)
-
-        checkQuantized(model)
-
-        # test one line API
-        model = quantize(ManualQuantModel(), default_eval_fn, calib_data)
-        checkQuantized(model)
-
+# Backward Compatibility
+from quantization.test_backward_compatibility import TestSerialization  # noqa: F401
 
 if __name__ == '__main__':
     run_tests()

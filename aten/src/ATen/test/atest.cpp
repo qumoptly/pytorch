@@ -20,6 +20,19 @@ void trace() {
   ASSERT_FLOAT_EQ(foo.trace().item<float>(), trace);
 }
 
+TEST(atest, operators) {
+  int a = 0b10101011;
+  int b = 0b01111011;
+
+  auto a_tensor = tensor({a});
+  auto b_tensor = tensor({b});
+
+  ASSERT_TRUE(tensor({~a}).equal(~a_tensor));
+  ASSERT_TRUE(tensor({a | b}).equal(a_tensor | b_tensor));
+  ASSERT_TRUE(tensor({a & b}).equal(a_tensor & b_tensor));
+  ASSERT_TRUE(tensor({a ^ b}).equal(a_tensor ^ b_tensor));
+}
+
 // TEST_CASE( "atest", "[]" ) {
 TEST(atest, atest) {
   manual_seed(123);
@@ -36,7 +49,7 @@ TEST(atest, atest) {
   float b = a.to<float>();
   ASSERT_EQ(b, 4);
 
-  foo = (foo * foo) == (foo.pow(3));
+  foo = ((foo * foo) == (foo.pow(3))).to(kByte);
   foo = 2 + (foo + 1);
   // foo = foo[3];
   auto foo_v = foo.accessor<uint8_t, 2>();
